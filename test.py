@@ -1,22 +1,10 @@
-import router as rt
+def create_BGP_message(routes):
+    msg = "BGP_ROUTES\n"+str(8881)
+    for end,route in routes.items():
+        route = [str(x) for x in route]
+        msg += "\n"+" ".join(route)
+    msg += "\n"+"END_ROUTES"
+    return msg.encode()
 
-ip_packet_v1 = "127.0.0.1,8885,10,347,0,00000005,1,hola!"
-
-# print(rt.parse_packet(ip_packet_v1.encode()))
-# print(rt.create_packet(rt.parse_packet(ip_packet_v1.encode()))==ip_packet_v1.encode())
-
-# print(rt.read_line("127.0.0.1 8882 8885 127.0.0.1 8882 100"))
-
-# print(rt.check_routes("v3_mtu/rutas_R2_v3_mtu.txt",("127.0.0.1",8885)))
-# print(rt.check_routes("v3_mtu/rutas_R2_v3_mtu.txt",("127.0.0.1",8885)))
-
-# print(rt.turn_to_string_eight(5))
-# print(rt.turn_to_string_eight(500))
-# print(rt.turn_to_string_eight(89922))
-
-webada = rt.fragment_IP_packet(ip_packet_v1.encode(), 38)
-print(webada)
-for i in webada:
-    print(rt.parse_packet(i)["MSG"],end="")
-print()
-
+routes = {8885:[8885,8882,8881],8884:[8884,8883,8881],8885:[8885,8884,8881]}
+print(create_BGP_message(routes).decode())

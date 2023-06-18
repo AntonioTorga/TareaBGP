@@ -4,8 +4,18 @@ import socket
 # router_ip = sys.argv[1]
 # router_port = int(sys.argv[2])
 # routes_path = sys.argv[3]
-# buff_size = 1000
+
+router_ip = "127.0.0.1"
+router_port = 8881
+routes_path = "rutas.txt"
+
+buff_size = 1000
 road_to = {}
+
+router_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+router_socket.bind((router_ip,router_port))
+received = {}
+print(f"IP: {router_ip}, PORT: {router_port}")
 def turn_to_string_eight(num):
     assert(type(num)==int)
     num = str(num)
@@ -110,32 +120,134 @@ def fragment_IP_packet(ip_packet, MTU):
     
     return fragments
 def reassemble_IP_packet(fragments):
-    pass
+    #asumimos que los fragments vienen parseados
+    if len(fragments)==0: return None
+    if len(fragments)==1:
+        if fragments[0]["FLAG"]==0 and fragments[0]["OFFSET"]==0:
+            return fragments[0]
+        else:
+            return None
+    #ordenamos los fragments
+    fragments.sort(key=lambda x: x["OFFSET"])
 
-# print(f"IP: {router_ip}, PORT: {router_port}")
+    offset = 0
+    message = ""
+    if fragments[-1]["FLAG"]!=0:
+        return None
+    for frag in fragments:
+        if frag["OFFSET"]!=offset:
+            return None
+        message+=frag["MSG"]
+        offset+=int(frag["SIZE"])
+    return {"IP":fragments[0]["IP"],"PORT":fragments[0]["PORT"],"TTL":fragments[0]["TTL"],"ID":fragments[0]["ID"],"OFFSET":0,"SIZE":turn_to_string_eight(offset),"FLAG":0,"MSG":message}
+def get_route(data):
+    data = data.split(" ")
+    data= data[1:-2]
+    data = [int(x) for x in data]
+    return data
+def create_first_BGP_message(routes_file_name):
+    msg = "BGP_ROUTES\n"+str(router_port)
+    file = open(routes_file_name,"r")
+    while(True):
+        data = file.readline()
+        if not data:
+            break
+        routes = get_route(data)
+        routes = [str(x) for x in routes]
+        msg += "\n"+" ".join(routes)
+    msg += "\n"+"END_ROUTES"
+    return msg.encode()
+def create_BGP_message(routes):
+    msg = "BGP_ROUTES\n"+str(8881)
+    for end,route in routes.items():
+        route = [str(x) for x in route]
+        msg += "\n"+" ".join(route)
+    msg += "\n"+"END_ROUTES"
+    return msg.encode()
 
-# router_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-# router_socket.bind((router_ip,router_port))
+def read_BGP_message(msg):
+    routes = []
+    msg = msg.split("\n")
+    sender = int(msg[1])
+    msg = msg[2:-1]
+    for route in msg:
+        route = route.split(" ")
+        route = [int(x) for x in route]
+        routes.append(route)
+    return routes, sender
 
-# while True:
-#     og, add = router_socket.recvfrom(buff_size)
-#     msg = parse_packet(og)
-#     if msg["TTL"]==0:
-#         print("Se recibió paquete {og} con TTL 0")
-#         continue
-#     if msg["IP"]==router_ip and msg["PORT"]==router_port:
-#         print(msg["MSG"])
-#     else:
-#         tupla = check_routes(routes_path, (msg["IP"], msg["PORT"]))
-#         if tupla == None:
-#             print(f"No hay rutas hacia {msg['IP']} {msg['PORT']} para {og.decode()}")
-#             continue
-#         add, mtu = tupla
-#         print(f"redirigiendo paquete {og} con destino final {(msg['IP'],msg['PORT'])} desde {(router_ip,router_port)} hacia {(add[0],add[1])}")
-#         fragments = fragment_IP_packet(og, mtu)
-#         for frag in fragments:
-                #bajar TTL
-#             router_socket.sendto(frag,(add[0],add[1]))
+def run_BGP():
+    ## Juntar conocidos y rutas a diccionario con llave == conocidos, y valor == rutas
+    file = open(routes_path,"r")
+    vecinos = []
+    rutas = {}
+    while(True):
+        data = file.readline()
+        if not data:
+            break
+        routes = get_route(data)
+        rutas[routes[0]]=routes
+        vecinos.append(routes[0])
+        msg = create_packet({"IP":router_ip,"PORT":routes[0],"TTL":10,"ID":0,"OFFSET":0,"SIZE":turn_to_string_eight(len("START_BGP".encode())),"FLAG":0,"MSG":"START_BGP"})
+        router_socket.sendto(msg,(router_ip,routes[0]))
+    
+    changed_table = False
+    while True:
+        if changed_table:
+            msg = create_BGP_message(rutas)
+            for vecino in vecinos:
+                router_socket.sendto(msg,(router_ip,vecino))
+        changed_table = False
+        msg,add = router_socket.recvfrom(buff_size)
+        #manejar timeout
+        msg = parse_packet(msg)
+        if msg["MSG"]=="START_BGP":
+            continue
+        elif msg["MSG"].startswith("BGP_ROUTES"):
+            routes, next_step = read_BGP_message(msg["MSG"])
+            for route in routes:
+                if router_port in route:
+                    continue
+                if route[0] in rutas:
+                    if len(route)<len(rutas[route[0]]):
+                        rutas[route[0]]=route
+                        changed_table = True
+                else:
+                    rutas[route[0]]= route + [router_port]
+                    changed_table = True
+            
+
+                    
+while True:
+    og, add = router_socket.recvfrom(buff_size)
+    msg = parse_packet(og)
+    if msg["TTL"]==0:
+        print("Se recibió paquete {og} con TTL 0")
+        continue
+    if msg["IP"]==router_ip and msg["PORT"]==router_port:
+        if msg["ID"] in received:
+            received[msg["ID"]].append(msg)
+        else:
+            received[msg["ID"]]=[msg]
+        complete = reassemble_IP_packet(received[msg["ID"]])
+        if complete != None:
+            del received[msg["ID"]]
+            print(complete["MSG"])
+            if complete["MSG"]=="START_BGP":
+                run_BGP()
+
+    else:
+        tupla = check_routes(routes_path, (msg["IP"], msg["PORT"]))
+        if tupla == None:
+            print(f"No hay rutas hacia {msg['IP']} {msg['PORT']} para {og.decode()}")
+            continue
+        add, mtu = tupla
+        print(f"redirigiendo paquete {og} con destino final {(msg['IP'],msg['PORT'])} desde {(router_ip,router_port)} hacia {(add[0],add[1])}")
+        msg["TTL"]-=1
+        og = create_packet(msg)
+        fragments = fragment_IP_packet(og, mtu)
+        for frag in fragments:
+            router_socket.sendto(frag,(add[0],add[1]))
 
         
 
